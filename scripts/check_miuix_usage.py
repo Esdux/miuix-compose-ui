@@ -767,6 +767,96 @@ def check_reuse(root: Path, findings: list[Finding]) -> None:
             )
             break
 
+def check_first_cards(root: Path, findings: list[Finding]) -> None:
+    """运行卡片页的前两张卡上方不准有分组标题（SmallTitle）。
+
+    判据：文件里存在状态卡（StatusCard 调用或 AppStatus 数据类）才算「运行卡片页」。
+    在这些文件里，SmallTitle 若落在第 1 或第 2 个 item(...) 块内，就报 WARNING。
+
+    为什么：SmallTitle 自带 PaddingValues(28.dp, 8.dp)，两个标题吃掉约 72dp ——
+    正好是一张数据卡的高度，而前两张卡是首屏唯一一定会被看的东西。
+    前两张卡各只有一张，没有可收拢的同类，标题只是把内容复述一遍。
+    """
+    STATE_MARKERS = ("StatusCard(", "AppStatus")
+    ITEM_START = re.compile(r"\bitem\s*\(")
+    TITLE = re.compile(r"\bSmallTitle\s*\(")
+
+    for path in iter_files(root, ".kt"):
+        raw = read(path)
+        body = strip_comments(raw)
+        if not any(marker in body for marker in STATE_MARKERS):
+            continue
+
+        item_starts = [m.start() for m in ITEM_START.finditer(body)]
+        if len(item_starts) < 2:
+            continue
+
+        for match in TITLE.finditer(body):
+            pos = match.start()
+            block = -1
+            for i, start in enumerate(item_starts):
+                if pos > start:
+                    block = i
+                else:
+                    break
+            if block in (0, 1):
+                findings.append(
+                    Finding(
+                        "WARNING",
+                        path,
+                        body.count("\n", 0, pos) + 1,
+                        f"运行卡片页的第 {block + 1} 张卡上方出现了分组标题 SmallTitle。"
+                        "前两张卡不准加标题 —— 它们各只有一张、没有可收拢的同类，标题只是复述内容；"
+                        "SmallTitle 自带 28/8dp 内边距，两个标题吃掉约 72dp ≈ 一张数据卡的高度。"
+                        "从第三张卡起才允许分组。见 SKILL.md 5.1。",
+                    )
+                )
+                break
+
+
+def check_ui_copy(root: Path, findings: list[Finding]) -> None:
+    """界面文案不准用括号做补充说明。
+
+    扫 UI 文案参数（title / summary / text / label / subtitle / contentDescription / placeholder）
+    的字符串字面量：含全角括号，或含半角括号且带中文 —— 报 WARNING。
+
+    为什么：括号里的字最先被折行、被截断，一对全角括号还占四个字符宽，
+    等于把副标题预算花在标点上。补充信息交给 summary / subtitle，或拆成两行。
+
+    例外：技术标识原样保留 —— 包名、版本号、路径、正则、全大写常量不做判定。
+    行级豁免：同一行或上一行写 // miuix-check: allow-brackets 。
+    """
+    UI_ARG = re.compile(
+        r'\b(?:title|summary|text|label|subtitle|contentDescription|placeholder)\s*=\s*"([^"]*)"'
+    )
+
+    for path in iter_files(root, ".kt"):
+        raw = read(path)
+        body = strip_comments(raw)
+        if not body.strip():
+            continue
+        lines = body.split("\n")
+
+        for match in UI_ARG.finditer(body):
+            val = match.group(1)
+            if not val or "${" in val:
+                continue
+            lineno = body.count("\n", 0, match.start()) + 1
+            if _line_exempt(lines, lineno) or _line_exempt(lines, lineno - 1):
+                continue
+            has_full = "\uff08" in val or "\uff09" in val
+            has_ascii = "(" in val or ")" in val
+            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in val)
+            if not (has_full or (has_ascii and has_cjk)):
+                continue
+            msg = (
+                "界面文案 " + repr(val) + " 里用了括号做补充说明。"
+                "括号里的字最先被折行、被截断，一对全角括号还占四个字符宽。"
+                "把它搬进 summary / subtitle，或拆成两行；单位写成 12.4 GB 而不是 12.4（GB）。"
+                "只有包名、版本号、路径、正则、报错原文这类技术标识才保留括号。见 SKILL.md 9.6。"
+            )
+            findings.append(Finding("WARNING", path, lineno, msg))
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check Miuix usage for common integration mistakes."
@@ -786,6 +876,8 @@ def main() -> int:
     check_list_and_dialog(root, findings)
     check_references(root, findings)
     check_reuse(root, findings)
+    check_first_cards(root, findings)
+    check_ui_copy(root, findings)
 
     for finding in findings:
         print(finding.render())
