@@ -54,7 +54,7 @@ fun SettingsPage(isBlurEnabled: Boolean, extraBottomPadding: Dp = 0.dp) {
                     // 会重绘 App 的设置 → 二级 Activity
                     ArrowPreference(
                         title = "主题",
-                        summary = "深色、浅色、动态取色，以及底栏形态",
+                        summary = "深色、浅色、Monet 取色，以及底栏形态",
                         onClick = {
                             context.startActivity(Intent(context, ThemeActivity::class.java))
                         },

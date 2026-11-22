@@ -65,9 +65,12 @@ class ThemeActivity : ComponentActivity() {
                                     "System" to "跟随系统",
                                     "Light" to "浅色",
                                     "Dark" to "深色",
-                                    "MonetSystem" to "动态取色 · 跟随系统",
-                                    "MonetLight" to "动态取色 · 浅色",
-                                    "MonetDark" to "动态取色 · 深色",
+                                    // 文案用 Monet 而不是「动态取色」：与系统「壁纸取色 / Monet」的叫法对齐，
+                                    // 也让六个选项形成两组对称的短标签（跟随系统/浅色/深色 × 普通/Monet），
+                                    // 扫读时前两个字就能分辨是哪一组。
+                                    "MonetSystem" to "Monet 跟随系统",
+                                    "MonetLight" to "Monet 浅色",
+                                    "MonetDark" to "Monet 深色",
                                 )
                                 val labels = modeKeys.map { it.second }
                                 val currentIndex = modeKeys

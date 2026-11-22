@@ -578,7 +578,7 @@ MiuixTheme(controller = controller) { /* ... */ }
 
 | 必须保留 | 控件 | 为什么不能删 |
 |---|---|---|
-| **六个主题模式** | `WindowDropdownPreference` 单选（不是六行 `ArrowPreference`，也不是只有浅色/深色两档） | 系统 / 浅色 / 深色 × 跟随系统取色 / 强制 Monet，六种组合覆盖「跟系统走」与「固定一种」两类诉求。砍成两档就丢了 Monet 取色与「跟随系统」 |
+| **六个主题模式** | `WindowDropdownPreference` 单选（不是六行 `ArrowPreference`，也不是只有浅色/深色两档） | 跟随系统 / 浅色 / 深色 × 普通 / Monet，六种组合覆盖「跟系统走」与「固定一种」两类诉求。下拉文案固定为 `跟随系统` `浅色` `深色` `Monet 跟随系统` `Monet 浅色` `Monet 深色` —— 用 **Monet** 而不是「动态取色」，与系统叫法对齐，也让六个短标签前两字就能分组。砍成两档就丢了 Monet 取色与「跟随系统」 |
 | **悬浮底栏开关** | `SwitchPreference` | 底栏形态（贴底 / 悬浮）是这套模板的辨识度来源，见第 4 节 |
 | **背景模糊开关** | `SwitchPreference` | 低端机 / 省电场景要能关；关掉后界面退化成纯色是设计好的降级，不是 bug |
 
