@@ -224,6 +224,7 @@ python scripts/check_miuix_usage.py --path <工程目录>   # 修 ERROR 与新�
 | 19 | **主题设置板块完整保留** | `ThemeActivity` 的六个模式 + 悬浮底栏 + 背景模糊三组一项不能少，也不进 9.5.1 可删清单。删掉后 `AppSettings` 三个字段、`AppNightMode`、状态栏同步、`settingsEpoch` 重读全成死代码；且它是唯一会重建 Activity 的设置，删了没法靠系统深色补救。见 6.1 |
 | 20 | **多选一必须下拉，禁止点击循环切换** | 点一下切到下一个（`(x + 1) % n`）用户永远猜不到下次变成什么、看不见全部选项、没法回退。≥3 个选项一律 `WindowDropdownPreference`；2 个选项且各需一句说明才平铺；布尔用 `SwitchPreference`。见 9.7 |
 | 21 | **功能入口唯一，同一配置不准两处入口** | 主页放一个、设置页又放一个是典型违反。两处都要维护、必有一处变旧版；用户改完一处回到另一处发现同名入口还在，会以为没保存。只留一个最合理的入口，其余删掉。概览与详情、同一 Activity 多内容不算重复。见 9.8 |
+| 22 | **应用壳必须重读设置** | 调 `AppShellScreen` 的 Activity 必须有 `onResume { settingsEpoch++ }` + `remember(settingsEpoch) { AppSettings.load(this) }`。只 onCreate 读一次的话，从主题页返回后悬浮底栏与背景模糊永远是旧值，症状就是「开关拨了没反应、只有主题模式有效」。见 6.2 |
 
 ---
 
@@ -611,6 +612,43 @@ MiuixTheme(controller = controller) { /* ... */ }
 
 ---
 
+### 6.2 应用壳必须重读设置（硬约束）
+
+**应用壳（调 `AppShellScreen` 的那个 Activity）必须走「onResume 自增 + remember 重读」这条链。**
+
+```kotlin
+// 对：每次回到前台都重读
+private var settingsEpoch by mutableStateOf(0)
+
+override fun onResume() {
+    super.onResume()
+    settingsEpoch++
+}
+
+setContent {
+    val settings = remember(settingsEpoch) { AppSettings.load(this) }
+    AppShellScreen(isFloatingNavbar = settings.isFloatingNavbar, isBlurEnabled = settings.isBlurEnabled)
+}
+
+// 错：onCreate 读一次，整个进程生命周期都不再读
+val settings = AppSettings.load(this)          // ← 快照
+setContent { AppShellScreen(isFloatingNavbar = settings.isFloatingNavbar) }
+```
+
+**为什么这是硬约束：**
+
+主题页是独立 Activity，它在自己的生命周期里 `AppSettings.save`，壳那边完全不知道。
+没有 `onResume` 重读，从主题页返回后壳里的 `isFloatingNavbar` / `isBlurEnabled` 还是进 App 时的旧值 ——
+**用户看到的就是「开关拨了没反应」**。
+
+主题模式之所以常常「看起来有效」，是因为它用 `remember { mutableStateOf(...) }` 包着，
+下一次 Activity 重建时会重新执行 —— 这是**重建时机凑巧**，不是机制正确。
+一旦某次返回没有触发重建，连主题模式也一起失效。
+
+检查脚本已带这条（`check_settings_reload`，WARNING）：壳文件里有 `AppSettings.load(`
+和 `AppShellScreen(` 却没有 `onResume` 就报。二级页（FeatureDetail / AppList 等）不判定。
+---
+
 ## 7. 模糊
 
 ```kotlin
@@ -814,7 +852,7 @@ grep -n "被删的类名" app/src/main/AndroidManifest.xml
 
 ### 9.5.5 改完必须过的自检清单
 
-29 项，逐项打勾。**任何一项不过就不要交付。**
+31 项，逐项打勾。**任何一项不过就不要交付。**
 
 **编译与静态检查**
 
@@ -859,6 +897,8 @@ grep -n "被删的类名" app/src/main/AndroidManifest.xml
 - [ ] 27. 主题设置板块完整：六模式下拉 + 悬浮底栏 + 背景模糊三组都在，入口可点进去（见 6.1）
 - [ ] 28. 没有任何「点一下切到下一个」的多选一；≥3 个选项都走 `WindowDropdownPreference`（见 9.7）
 - [ ] 29. 同一个配置功能只有一个入口，没有「主页一个、设置页又一个」（见 9.8）
+- [ ] 30. 应用壳有 `onResume { settingsEpoch++ }` 与 `remember(settingsEpoch)` 重读（见 6.2）
+- [ ] 31. 入口标题与目标页标题同名；同一工厂函数调用风格统一（全用命名参数）（见 9.8）
 
 ### 9.6 界面文案：不用括号补充说明
 
@@ -976,6 +1016,14 @@ ArrowPreference(
 
 **判定问句：这两个入口点进去，改的是不是同一份设置？**
 是 → 删掉一个；不是 → 它们本来就不是同一个功能，标题要写得能区分。
+
+**两条附加要求（同属入口规范）：**
+
+1. **入口标题必须与目标页标题同名。** 入口写「音频延迟设置」、点进去标题写「音频延迟」是不行的 ——
+   用户会以为进了另一个地方。同一个功能从头到尾只有一个名字。
+2. **同一工厂函数的所有调用风格必须统一。** `FeatureDetailActivity.intent(ctx, title = "X", summary = "...")`
+   与 `FeatureDetailActivity.intent(ctx, "X", "...")` 混用时，改参数顺序的人一定会漏掉一半。
+   全用命名参数（`title = ` / `summary = `），位置参数只在参数只有一个时用。
 
 检查脚本已带这两条（`check_entry_unique` / `check_orphan_activity`，WARNING）：
 

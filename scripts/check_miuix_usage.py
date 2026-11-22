@@ -1097,6 +1097,41 @@ def check_orphan_activity(root: Path, findings: list[Finding]) -> None:
                 )
             )
 
+def check_settings_reload(root: Path, findings: list[Finding]) -> None:
+    """应用壳必须重读设置：只 onCreate 读一次 = 开关拨了没反应（SKILL.md 6.2）。
+
+    判据：某个 ComponentActivity 文件同时满足
+      - 有 AppSettings.load( ，
+      - 有 setContent（说明是界面壳），
+      - 没有 onResume（没有重读时机），
+      - 文件名不含 Theme（主题页自己写自己，不需要重读）
+    → 报 WARNING。
+
+    真实反例（小米妙播模块，2026-11-21）：MainActivity 在 onCreate 里
+    val settings = AppSettings.load(this) 读一次，再传给 AppShellScreen；
+    从主题页返回后这两个值永远是旧值，症状是「主题页只有主题模式有效」。
+    """
+    ACT = re.compile(r"class\s+(\w+)\s*:\s*ComponentActivity\s*\(")
+
+    for path in iter_files(root, ".kt"):
+        if "Theme" in path.name:
+            continue
+        body = strip_comments(read(path))
+        if "AppSettings.load(" not in body or "AppShellScreen(" not in body:
+            continue
+        if "onResume" in body:
+            continue
+        m = ACT.search(body)
+        if not m:
+            continue
+        msg = (
+            m.group(1) + " 在 onCreate 里读一次 AppSettings.load 就再不重读（没有 onResume）。"
+            "从主题页返回后，悬浮底栏、背景模糊这些值永远是进 App 时的旧值 —— "
+            "症状是「主题页设置只有主题模式有效」。加 onResume { settingsEpoch++ } 并用 "
+            "remember(settingsEpoch) { AppSettings.load(this) } 重读，见 SKILL.md 6.2。"
+        )
+        findings.append(Finding("WARNING", path, body.count(chr(10), 0, m.start()) + 1, msg))
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check Miuix usage for common integration mistakes."
@@ -1122,6 +1157,7 @@ def main() -> int:
     check_option_picker(root, findings)
     check_entry_unique(root, findings)
     check_orphan_activity(root, findings)
+    check_settings_reload(root, findings)
 
     for finding in findings:
         print(finding.render())
