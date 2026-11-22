@@ -851,6 +851,11 @@ def check_ui_copy(root: Path, findings: list[Finding]) -> None:
             has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in val)
             if not (has_full or (has_ascii and has_cjk)):
                 continue
+            # 技术标识白名单：括号里装的全是 ASCII（协议码 32、包名 com.xiaomi.mirror:cast、
+            # 类名 miRyShareTransfer、单位 GB）不算补充说明，放行。
+            inner = re.findall(r"[（(]([^）)]*)[）)]", val)
+            if inner and not any(any("一" <= ch <= "鿿" for ch in g) for g in inner):
+                continue
             msg = (
                 "界面文案 " + repr(val) + " 里用了括号做补充说明。"
                 "括号里的字最先被折行、被截断，一对全角括号还占四个字符宽。"
@@ -991,23 +996,37 @@ def check_option_picker(root: Path, findings: list[Finding]) -> None:
 
 
 def check_entry_unique(root: Path, findings: list[Finding]) -> None:
-    """功能入口必须唯一：同一个配置页不准从两个页面都能进（SKILL.md 9.8）。
+    """功能入口必须唯一：同一个配置不准从两个页面都能进（SKILL.md 9.8）。
 
-    判据：拷出所有 `startActivity(Intent(ctx, XxxActivity::class.java))`，
-    同一个目标 Activity 出现在两个以上不同文件里就报 WARNING。
+    两种判据：
+      1. 同一个目标 Activity 在 >=2 个文件里被 startActivity(Intent(...)) 跳转；
+      2. 同一个 (Activity, title) 在 >=2 个文件里作为跳转参数出现。
 
-    为什么：两个入口意味着两处都要维护、两处都可能有一处是旧版。
-    更糟的是用户会以为它们是两个功能 —— 在主页点进去改了设置，回到设置页发现
-    同一个名字的入口还在，于是怀疑自己刚才没保存。
+    第 2 条同时支持两种调用风格：命名参数 title = "X" 与位置参数 intent(ctx, "X", ...)。
+    同一个工厂函数被两种风格调用本身也是不一致，但这里只按「同一 title 多入口」报。
     """
     JUMP = re.compile(r"startActivity\s*\(\s*Intent\s*\([^)]*?([A-Z]\w*Activity)\s*::\s*class")
+    INTENT_CALL = re.compile(r"([A-Z]\w*Activity)\.intent\s*\(")
+    NAMED_TITLE = re.compile(r"title\s*=\s*\"([^\"]+)\"")
+    POS_TITLE = re.compile(r",\s*\"([^\"]+)\"")
+
     targets: dict[str, list[str]] = {}
+    titled: dict[tuple[str, str], list[str]] = {}
 
     for path in iter_files(root, ".kt"):
         body = strip_comments(read(path))
         for m in JUMP.finditer(body):
+            targets.setdefault(m.group(1), []).append(path.name)
+        for m in INTENT_CALL.finditer(body):
             activity = m.group(1)
-            targets.setdefault(activity, []).append(path.name)
+            window = body[m.end():m.end() + 300]
+            # 截到本调用结束，避免串到同文件下一个 intent(...) 的参数
+            close = window.find(chr(41))
+            if close >= 0:
+                window = window[:close]
+            tm = NAMED_TITLE.search(window) or POS_TITLE.search(window)
+            if tm:
+                titled.setdefault((activity, tm.group(1)), []).append(path.name)
 
     for activity, files in sorted(targets.items()):
         uniq = sorted(set(files))
@@ -1019,12 +1038,64 @@ def check_entry_unique(root: Path, findings: list[Finding]) -> None:
                 root,
                 None,
                 activity + " 有 " + str(len(uniq)) + " 个入口文件（" + " / ".join(uniq) + "）。"
-                "同一个配置功能不准放多个入口，见 SKILL.md 9.8："
-                "用户会以为它们是两个功能，改完一处回到另一处发现同名入口还在，会怀疑没保存。"
-                "只留一个最合理的入口，其余删掉。",
+                "同一个配置功能不准放多个入口，见 SKILL.md 9.8：用户会以为它们是两个功能，"
+                "改完一处回到另一处发现同名入口还在，会怀疑没保存。只留一个最合理的入口。",
             )
         )
 
+    for (activity, title), files in sorted(titled.items()):
+        uniq = sorted(set(files))
+        if len(uniq) < 2:
+            continue
+        findings.append(
+            Finding(
+                "WARNING",
+                root,
+                None,
+                "功能「" + title + "」有 " + str(len(uniq)) + " 个入口（" + " / ".join(uniq) + "）。"
+                "同一个配置功能只准一个入口，见 SKILL.md 9.8：两处都要维护、必有一处变旧版；"
+                "用户改完一处回到另一处发现同名入口还在，会以为没保存。",
+            )
+        )
+
+def check_orphan_activity(root: Path, findings: list[Finding]) -> None:
+    """Activity 类必须在 AndroidManifest.xml 注册（SKILL.md 9.8）。
+
+    未注册的 Activity 是死代码：编译能过、没人能进去，但它往往是一份「完整版」，
+    而真正在用的那份是残缺版 —— 两套壳并存时最难查，因为代码看着都对。
+    """
+    manifest = None
+    for cand in sorted(root.rglob("AndroidManifest.xml")):
+        if any(part in SKIP_DIRS for part in cand.parts):
+            continue
+        manifest = cand
+        break
+    if manifest is None:
+        return
+
+    xml = read(manifest)
+    declared = set(re.findall(r'android:name="([^' + chr(34) + ']+)"', xml))
+    short = {d.rsplit(".", 1)[-1] for d in declared}
+
+    ACT = re.compile(r"class\s+(\w+)\s*:\s*(?:ComponentActivity|Activity)\s*\(")
+
+    for path in iter_files(root, ".kt"):
+        body = strip_comments(read(path))
+        for m in ACT.finditer(body):
+            name = m.group(1)
+            if name in short:
+                continue
+            findings.append(
+                Finding(
+                    "WARNING",
+                    path,
+                    body.count(chr(10), 0, m.start()) + 1,
+                    name + " 继承了 Activity 但 AndroidManifest.xml 里没有注册。"
+                    "未注册的 Activity 是死代码，进不去；更危险的是它常常是一份「完整版」，"
+                    "而真正在用的那份是残缺版（缺 settingsEpoch / onResume 重读），"
+                    "症状就是「设置里改了没反应」。要么注册它并删掉另一份，要么删掉它。见 SKILL.md 9.8。",
+                )
+            )
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -1050,6 +1121,7 @@ def main() -> int:
     check_theme_block(root, findings)
     check_option_picker(root, findings)
     check_entry_unique(root, findings)
+    check_orphan_activity(root, findings)
 
     for finding in findings:
         print(finding.render())

@@ -884,6 +884,10 @@ grep -n "被删的类名" app/src/main/AndroidManifest.xml
 **例外：技术标识原样保留。** 包名（`com.foo.bar`）、版本号（`v1.0`）、文件路径、正则、
 代码片段、系统返回的错误原文 —— 这些是数据不是文案，括号照留（`getInstalledPackages(GET_META_DATA)` 不要改）。
 
+**脚本判定规则：括号里的内容全是 ASCII 就放行。** `P2P(32)`、`投屏（com.xiaomi.mirror:cast）`、
+`互传（miLyraShareTransfer）`、`12.4（GB）` 都不报；只有括号里出现中文（`保持存活（会增加内存占用）`）才报。
+这条是 2026-11-21 跑小米妙播工程时补的 —— 初版对上面四个技术标识全部误报。
+
 **判定问句：把括号连内容一起删掉，这句话还能读吗？**
 能读 → 括号里的是补充，搬去副标题或删掉；不能读 → 说明它是正文的一部分，用逗号或拆行，不要括起来。
 
@@ -973,8 +977,23 @@ ArrowPreference(
 **判定问句：这两个入口点进去，改的是不是同一份设置？**
 是 → 删掉一个；不是 → 它们本来就不是同一个功能，标题要写得能区分。
 
-检查脚本已带这条（`check_entry_unique`，WARNING）：拷出所有
-`startActivity(Intent(ctx, XxxActivity::class.java))`，同一目标出现在两个以上文件里就报。
+检查脚本已带这两条（`check_entry_unique` / `check_orphan_activity`，WARNING）：
+
+1. **同一目标 Activity 在 ≥2 个文件被 `startActivity(Intent(...))` 跳转** → 报；
+2. **同一 `(Activity, title)` 在 ≥2 个文件作为跳转参数出现** → 报。这一条专门抓
+   「一个通用详情页承载多种内容」的工程 —— 形态是 `FeatureDetailActivity.intent(ctx, "音频延迟", ...)`
+   出现在三个页面里。命名参数 `title = "X"` 与位置参数都要认（同一工厂被两种风格调用，
+   本身也是不一致）。
+3. **Activity 继承了 `ComponentActivity` / `Activity` 却没在 manifest 注册** → 报。
+   未注册的 Activity 是死代码，但它往往是一份「完整版」（有 `settingsEpoch`、`onResume` 重读），
+   而真正在用的那份是残缺版 —— 两套壳并存时最难查，因为代码看着都对。
+
+> **真实反例（小米妙播模块，2026-11-21 实测）**：`AppShell.kt` 里有一个功能完整的
+> `AppShellActivity`（`settingsEpoch` + `onResume` 重读 + `applyNightMode` + `surfaceArgb`），
+> 但 manifest 只注册了 `MainActivity` —— 它在 `onCreate` 里 `val settings = AppSettings.load(this)`
+> 读一次就再也不读。结果：从主题页返回后，「悬浮底栏」「背景模糊」两个开关拨了没反应，
+> 只有主题模式因为 `runCatching { ColorSchemeMode.valueOf(...) }` 在下一次重建时重读，看起来有效。
+> 用户的原话是「主题页设置只有主题模式有效」。
 
 ---
 ## 10. 事实基线（2026-11）
