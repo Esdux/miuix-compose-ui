@@ -987,7 +987,7 @@ def check_option_picker(root: Path, findings: list[Finding]) -> None:
                         path,
                         hit_line,
                         "点击回调里出现" + label + "，看起来是「点一下切到下一个」的循环切换。"
-                        "多选一（>=3 个选项）必须用 WindowDropdownPreference 弹下拉，见 SKILL.md 9.7："
+                        "多选一（只要有选项，>=2 个互斥值）必须用 WindowDropdownPreference 弹下拉，见 SKILL.md 9.7："
                         "循环切换让用户猜不到下次变成什么、看不见全部选项、也没法回退。"
                         "若这里确实是轮播图索引或分页游标，加 // miuix-check: allow-option-cycle 并写明理由。",
                     )
