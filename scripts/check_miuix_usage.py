@@ -352,12 +352,14 @@ PAGER_PAGE_COUNT = re.compile(r"rememberPagerState\s*\(\s*pageCount\s*=\s*\{\s*(
 # 只给「本来就不该跟主题走」的少数场合用 —— 标签 chip 的 9sp、StatusTag 的 4×2dp 内边距。
 # 用行级而不是文件级：一个 StatusTag 不该让整份 ListPage.kt 失去栅格检查。
 DESIGN_TOKEN_EXEMPT = "miuix-check: allow-design-tokens"
+BRACKET_EXEMPT = "miuix-check: allow-brackets"
+CYCLE_EXEMPT = "miuix-check: allow-option-cycle"
 
 
-def _line_exempt(lines: list[str], lineno: int) -> bool:
+def _line_exempt(lines: list[str], lineno: int, marker: str = DESIGN_TOKEN_EXEMPT) -> bool:
     """lineno is 1-based; the marker may sit on that line or the one above it."""
     for candidate in (lineno, lineno - 1):
-        if 1 <= candidate <= len(lines) and DESIGN_TOKEN_EXEMPT in lines[candidate - 1]:
+        if 1 <= candidate <= len(lines) and marker in lines[candidate - 1]:
             return True
     return False
 
@@ -835,14 +837,14 @@ def check_ui_copy(root: Path, findings: list[Finding]) -> None:
         body = strip_comments(raw)
         if not body.strip():
             continue
-        lines = body.split("\n")
+        lines = raw.split("\n")
 
         for match in UI_ARG.finditer(body):
             val = match.group(1)
             if not val or "${" in val:
                 continue
             lineno = body.count("\n", 0, match.start()) + 1
-            if _line_exempt(lines, lineno) or _line_exempt(lines, lineno - 1):
+            if _line_exempt(lines, lineno, BRACKET_EXEMPT):
                 continue
             has_full = "\uff08" in val or "\uff09" in val
             has_ascii = "(" in val or ")" in val
@@ -938,6 +940,92 @@ def check_theme_block(root: Path, findings: list[Finding]) -> None:
                 )
 
 
+def check_option_picker(root: Path, findings: list[Finding]) -> None:
+    """多选一必须用下拉，禁止点击循环切换（SKILL.md 9.7）。
+
+    静态只能抓两种最典型的写法，扫描窗口限定在 onClick / onCheckedChange 的 lambda 里：
+      1. 模运算轮转： (x + 1) % n
+      2. 调用 next / cycle / rotate / advance 类函数
+
+    Boolean 开关（SwitchPreference）是合法的，模运算只对 >=3 个选项才成立，所以这里只报
+    WARNING 而不是 ERROR —— 轮播图索引、分页游标也可能用 % 运算，需要人看一眼。
+
+    行级豁免：同一行或上一行写 // miuix-check: allow-option-cycle 。
+    """
+    CLICK = re.compile(r"\bon(?:Click|CheckedChange|SelectedIndexChange)?\s*=\s*\{")
+    ROTATE = [
+        (re.compile(r"\(\s*[\w.]+\s*\+\s*1\s*\)\s*%"), "模运算轮转 (x + 1) % n"),
+        (re.compile(r"\b(?:next|cycle|rotate|advance)(?!Card)[A-Z]?\w*\s*\("), "调用 next/cycle/rotate 类函数"),
+    ]
+
+    for path in iter_files(root, ".kt"):
+        raw = read(path)
+        body = strip_comments(raw)
+        if "DropDown" in body or "Dropdown" in body:
+            # 文件里已经有下拉组件，仍然检查，但不因为「有下拉」就跳过
+            pass
+        lines = raw.split(chr(10))
+
+        for click in CLICK.finditer(body):
+            start = click.end()
+            window = body[start:start + 400]
+            for pattern, label in ROTATE:
+                m = pattern.search(window)
+                if not m:
+                    continue
+                hit_line = body.count(chr(10), 0, start + m.start()) + 1
+                if _line_exempt(lines, hit_line, CYCLE_EXEMPT):
+                    continue
+                findings.append(
+                    Finding(
+                        "WARNING",
+                        path,
+                        hit_line,
+                        "点击回调里出现" + label + "，看起来是「点一下切到下一个」的循环切换。"
+                        "多选一（>=3 个选项）必须用 WindowDropdownPreference 弹下拉，见 SKILL.md 9.7："
+                        "循环切换让用户猜不到下次变成什么、看不见全部选项、也没法回退。"
+                        "若这里确实是轮播图索引或分页游标，加 // miuix-check: allow-option-cycle 并写明理由。",
+                    )
+                )
+                break
+
+
+def check_entry_unique(root: Path, findings: list[Finding]) -> None:
+    """功能入口必须唯一：同一个配置页不准从两个页面都能进（SKILL.md 9.8）。
+
+    判据：拷出所有 `startActivity(Intent(ctx, XxxActivity::class.java))`，
+    同一个目标 Activity 出现在两个以上不同文件里就报 WARNING。
+
+    为什么：两个入口意味着两处都要维护、两处都可能有一处是旧版。
+    更糟的是用户会以为它们是两个功能 —— 在主页点进去改了设置，回到设置页发现
+    同一个名字的入口还在，于是怀疑自己刚才没保存。
+    """
+    JUMP = re.compile(r"startActivity\s*\(\s*Intent\s*\([^)]*?([A-Z]\w*Activity)\s*::\s*class")
+    targets: dict[str, list[str]] = {}
+
+    for path in iter_files(root, ".kt"):
+        body = strip_comments(read(path))
+        for m in JUMP.finditer(body):
+            activity = m.group(1)
+            targets.setdefault(activity, []).append(path.name)
+
+    for activity, files in sorted(targets.items()):
+        uniq = sorted(set(files))
+        if len(uniq) < 2:
+            continue
+        findings.append(
+            Finding(
+                "WARNING",
+                root,
+                None,
+                activity + " 有 " + str(len(uniq)) + " 个入口文件（" + " / ".join(uniq) + "）。"
+                "同一个配置功能不准放多个入口，见 SKILL.md 9.8："
+                "用户会以为它们是两个功能，改完一处回到另一处发现同名入口还在，会怀疑没保存。"
+                "只留一个最合理的入口，其余删掉。",
+            )
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check Miuix usage for common integration mistakes."
@@ -960,6 +1048,8 @@ def main() -> int:
     check_first_cards(root, findings)
     check_ui_copy(root, findings)
     check_theme_block(root, findings)
+    check_option_picker(root, findings)
+    check_entry_unique(root, findings)
 
     for finding in findings:
         print(finding.render())
