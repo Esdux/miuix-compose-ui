@@ -221,6 +221,7 @@ python scripts/check_miuix_usage.py --path <工程目录>   # 修 ERROR 与新�
 | 16 | **优先复用已有资源，不自绘、不重排** | 第 11 节列了 28 个模板。状态卡、设置页、列表页、底栏、顶栏、间距常量都已写好并在真机验证过；自己重画的结果是「看着差不多但处处差一点」。只有品牌图形（logo、启动图标）与模板确实没有的新布局才允许新写 |
 | 17 | **运行卡片页前两张卡不加分组标题** | `SmallTitle` 自带 28/8dp 内边距，两个标题吃掉 72dp ≈ 一张卡的高度；前两张卡各只有一张，没有可收拢的同类，标题只是复述内容。从第三张卡起、或一个标题下确实有两张以上同类卡时才加。见 5.1 |
 | 18 | **界面文案不用括号补充说明** | 括号里的字最先被折行、被截断（`保持存活（会增加内存…`）；一对全角括号占四个字符宽，等于把副标题预算花在标点上。补充信息交给 `summary` / `subtitle`，或拆成两行。包名、版本号、路径、正则、报错原文等技术标识照原样保留。见 9.6 |
+| 19 | **主题设置板块完整保留** | `ThemeActivity` 的六个模式 + 悬浮底栏 + 背景模糊三组一项不能少，也不进 9.5.1 可删清单。删掉后 `AppSettings` 三个字段、`AppNightMode`、状态栏同步、`settingsEpoch` 重读全成死代码；且它是唯一会重建 Activity 的设置，删了没法靠系统深色补救。见 6.1 |
 
 ---
 
@@ -571,6 +572,41 @@ MiuixTheme(controller = controller) { /* ... */ }
 3. **`onResume` 让 `settingsEpoch` 自增**。主题页是独立 Activity，在本页 stopped 期间保存改动；
    不重读就停在你离开时的主题上，直到下次冷启动。
 
+### 6.1 主题设置板块硬性完整保留（不准删、不准减项）
+
+**`ThemeActivity` 这个二级页整块保留，三组内容一项都不能少。** 它不进入 9.5.1 的可删清单。
+
+| 必须保留 | 控件 | 为什么不能删 |
+|---|---|---|
+| **六个主题模式** | `WindowDropdownPreference` 单选（不是六行 `ArrowPreference`，也不是只有浅色/深色两档） | 系统 / 浅色 / 深色 × 跟随系统取色 / 强制 Monet，六种组合覆盖「跟系统走」与「固定一种」两类诉求。砍成两档就丢了 Monet 取色与「跟随系统」 |
+| **悬浮底栏开关** | `SwitchPreference` | 底栏形态（贴底 / 悬浮）是这套模板的辨识度来源，见第 4 节 |
+| **背景模糊开关** | `SwitchPreference` | 低端机 / 省电场景要能关；关掉后界面退化成纯色是设计好的降级，不是 bug |
+
+配套的**四件基础设施同属这个板块**，删页面就等于把它们变成死代码：
+
+1. `AppSettings` 的 `themeMode` / `isFloatingNavbar` / `isBlurEnabled` 三个字段与 `save` / `load`；
+2. `AppNightMode`（`launch_background` 里的夜间启动底色，避免冷启动白闪）；
+3. `MiuixAppTheme` 里按 surface 亮度同步状态栏图标的 `SideEffect`；
+4. `AppShell` 的 `onResume` 重读与 `settingsEpoch` 自增。
+
+**为什么是硬规范而不是「建议保留」：**
+
+- **主题是环境适配，不是可选功能。** 系统进深色、用户开 Monet，App 还停在浅色蓝，这不叫精简，叫没适配。
+- **它是唯一会重建 Activity 的设置。** 删掉后 `onStop` 应用主题、`settingsEpoch` 重读、`AppNightMode` 夜间启动色这条链路整体失效，剩下的代码全是死的。
+- **二级页形式本身就是排班结论。** 设置页超过约 12 行才拆出主题页（`references/hmc-patterns.md` 第 2 节）；拆都拆了又删，等于同时违反「不要过长设置页」和「不要空壳二级页」两条。
+- **删了没法反悔。** 用户装到没有主题页的版本，只能靠系统强制深色，App 自身的取色与蒙版体系全部拿不到。
+
+**允许的改动边界：**
+
+| 允许 | 不允许 |
+|---|---|
+| 换主题页的入口位置（设置页第一行的 `ArrowPreference`） | 删掉入口 |
+| 在三个开关之外**增加**新开关（如「圆角强度」） | 减掉表中任一项，或把六个模式砍成两档 |
+| 调主题页内部的分组标题、行顺序 | 把主题选择搬回设置页就地展开（会触发整页重建） |
+| 换 `WindowDropdownPreference` 的文案 | 用 `Overlay*` 弹层替代 `Window*`（依赖 `popupHost`，主题页里没有 Scaffold） |
+
+检查脚本已带这条（`check_theme_block`，ERROR）。
+
 ---
 
 ## 7. 模糊
@@ -673,6 +709,9 @@ fun rememberBlurBackdrop(): LayerBackdrop? {
 拿到需求后，先把模板里**这次用不到**的东西列出来，而不是先加新的。
 判据只有一条：**它是否服务于这次要交付的那个功能？**
 
+> **例外：主题设置板块不参与这个判定。** `ThemeActivity` 整块硬性保留（见 6.1），
+> 无论本次构建有没有「主题要能切」这个需求 —— 它是环境适配，不是可选功能。
+
 | 模板里的东西 | 什么时候删 | 什么时候留 |
 |---|---|---|
 | `HomePage.kt` 的「设备」卡（设备名/型号/系统版本） | 产品不是设备管理类工具 | 是系统级模块（vcut / HyperMusicCover 这类） |
@@ -683,7 +722,7 @@ fun rememberBlurBackdrop(): LayerBackdrop? {
 | `AboutPage.kt` 的「开源许可」 | 不分发、无第三方依赖 | 要上架或开源 |
 | `ListPage.kt` + `ListViewModel.kt` | 没有「一屏列 N 个同类项」 | 有候选列表/搜索结果 |
 | `AppListPage.kt` + `AppListActivity.kt` + `AppDetailActivity.kt` | 不处理已安装应用 | 是模块类 App（Xposed/LSPosed/Shizuku） |
-| `ThemeActivity.kt` | 主题固定、不开放切换 | 开放主题切换（绝大多数都要） |
+| ~~`ThemeActivity.kt`~~ | **不列入本清单 —— 主题设置板块硬性完整保留，见 6.1** | 始终保留 |
 | `effect/` 下 7 个文件 | 不需要背景特效 | 要做 HyperOS 风格背景（vcut 的做法） |
 
 **删的时候连带删三样**，漏一样就编译不过或运行时崩：
@@ -773,7 +812,7 @@ grep -n "被删的类名" app/src/main/AndroidManifest.xml
 
 ### 9.5.5 改完必须过的自检清单
 
-26 项，逐项打勾。**任何一项不过就不要交付。**
+27 项，逐项打勾。**任何一项不过就不要交付。**
 
 **编译与静态检查**
 
@@ -815,6 +854,7 @@ grep -n "被删的类名" app/src/main/AndroidManifest.xml
 - [ ] 24. 深色与浅色两种主题下都看过截图（不能只看一种）
 - [ ] 25. 运行卡片页的前两张卡上方没有 `SmallTitle` 分组标题（见 5.1）
 - [ ] 26. 界面文案里没有用括号做补充说明；该进 `summary` 的都进了（见 9.6）
+- [ ] 27. 主题设置板块完整：六模式下拉 + 悬浮底栏 + 背景模糊三组都在，入口可点进去（见 6.1）
 
 ### 9.6 界面文案：不用括号补充说明
 
@@ -934,7 +974,7 @@ Android 用 `-android` 变体。
 | 导航 | `references/navigation.md` | miuix-nav 路由、转场、手势 |
 | 依赖与版本 | `references/setup-and-versions.md` | 模块矩阵、坐标、版本兼容、升级迁移 |
 | 故障排查 | `references/troubleshooting.md` | 常见编译/运行/显示问题 |
-| 主题二级页 | `assets/ThemeActivity.kt` | 六模式下拉 + 悬浮底栏 + 背景模糊 |
+| **主题二级页** | `assets/ThemeActivity.kt` | 六模式下拉 + 悬浮底栏 + 背景模糊（**硬性完整保留，见 6.1**） |
 | 功能详情页 | `assets/FeatureDetailActivity.kt` | 一个 Activity 承载所有「点进去」，`intent()` 工厂 |
 | 背景动效 | `assets/effect/` | `BgEffectBackground` + Painter/Modifier/Config + OS2/OS3 + DeviceType |
 | 图标与窗口 | `assets/res/` | `ic_about_logo` / 启动图标 / `themes.xml`（状态卡勾与感叹号来自 `material-icons-extended`，不自绘） |

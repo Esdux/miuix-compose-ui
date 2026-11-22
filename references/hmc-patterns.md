@@ -82,6 +82,9 @@ FoldUnder(module.coverFeature, settled = enabled) {
 
 ## 2. 主题设置单独成页
 
+> **这一块是模板的硬性组成部分，不准删、不准减项。** 见 SKILL.md 6.1：
+> 六模式下拉 + 悬浮底栏 + 背景模糊三组一项不能少，也不进任何可删清单。
+
 ### 为什么不在设置页里
 
 KernelSU 的做法是设置页只留一行「主题」，点进去是完整的 appearance 区块。HMC 跟随它，理由写在自己的注释里：

@@ -857,6 +857,87 @@ def check_ui_copy(root: Path, findings: list[Finding]) -> None:
             )
             findings.append(Finding("WARNING", path, lineno, msg))
 
+def check_theme_block(root: Path, findings: list[Finding]) -> None:
+    """主题设置板块必须完整保留（SKILL.md 6.1）。
+
+    判据分三层，任何一层不过都是 ERROR：
+      1. ThemeActivity 文件存在（或其等价主题二级页）；
+      2. 页内三组控件都在：WindowDropdownPreference（六模式）+ 两个 SwitchPreference；
+      3. AppSettings 里 themeMode / isFloatingNavbar / isBlurEnabled 三个字段都在。
+
+    为什么用 ERROR 而不是 WARNING：主题是环境适配，删掉之后 App 自己拿不到取色与蒙版，
+    用户只能靠系统强制深色补救；而 AppSettings 三字段、AppNightMode、状态栏同步、
+    settingsEpoch 重读会同时变成死代码。这不是风格问题，是功能残缺。
+
+    豁免：整份工程没有 MiuixTheme 时（纯资源工程、单测工程）不判定。
+    """
+    kt_files = list(iter_files(root, ".kt"))
+    if not kt_files:
+        return
+
+    probe = ""
+    for f in kt_files[:60]:
+        probe += read(f)
+        if len(probe) > 400000:
+            break
+    if "MiuixTheme" not in probe:
+        return
+
+    theme_files = [f for f in kt_files if f.name == "ThemeActivity.kt"]
+    theme_pages = []
+    for f in kt_files:
+        src = read(f)
+        if "WindowDropdownPreference" in src and "ColorSchemeMode" in src:
+            theme_pages.append(f)
+    target = theme_files or theme_pages
+    if not target:
+        findings.append(
+            Finding(
+                "ERROR",
+                root,
+                None,
+                "找不到主题设置板块（ThemeActivity.kt，或含 WindowDropdownPreference 与 ColorSchemeMode 的页面）。"
+                "主题设置必须完整保留，见 SKILL.md 6.1：它是唯一会重建 Activity 的设置，"
+                "删掉后 AppSettings 三字段、AppNightMode、状态栏同步、settingsEpoch 重读全成死代码。",
+            )
+        )
+        return
+
+    page = target[0]
+    src = strip_comments(read(page))
+    checks = [
+        ("WindowDropdownPreference", "六个主题模式的单选下拉"),
+        ('"悬浮底栏"', "悬浮底栏开关"),
+        ('"背景模糊"', "背景模糊开关"),
+    ]
+    for token, label in checks:
+        if token not in src:
+            findings.append(
+                Finding(
+                    "ERROR",
+                    page,
+                    None,
+                    "主题设置板块缺少" + label + "（找不到 " + token + "）。"
+                    "三项一项都不能少，见 SKILL.md 6.1：六模式 + 悬浮底栏 + 背景模糊。",
+                )
+            )
+
+    settings_files = [f for f in kt_files if f.name == "AppSettings.kt"]
+    if settings_files:
+        ssrc = strip_comments(read(settings_files[0]))
+        for field in ("themeMode", "isFloatingNavbar", "isBlurEnabled"):
+            if field not in ssrc:
+                findings.append(
+                    Finding(
+                        "ERROR",
+                        settings_files[0],
+                        None,
+                        "AppSettings 缺少 " + field + " 字段。主题板块的三项设置必须能持久化，"
+                        "删字段会让主题页读写到不存在的键，见 SKILL.md 6.1。",
+                    )
+                )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check Miuix usage for common integration mistakes."
@@ -878,6 +959,7 @@ def main() -> int:
     check_reuse(root, findings)
     check_first_cards(root, findings)
     check_ui_copy(root, findings)
+    check_theme_block(root, findings)
 
     for finding in findings:
         print(finding.render())
